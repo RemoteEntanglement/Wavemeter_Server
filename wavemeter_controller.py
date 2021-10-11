@@ -21,63 +21,105 @@ import server_network
 
 class WavemeterController():
     def __init__(self):
-        # deprecated - self.server_socket = server_network.ServerSocket(self)
+        """ Initialize internal datastructures
+            1. _server_status : 
+            2. _work_list : List of message that should be handled. Messages include the
+              request to update the settings, save configurations, or reply server info.
+            3. _channel_list : Dictionary of current channel lists which are read from
+              the config file. It has key-value pair of (channel_name, Channel object).
+              Each Channel object has the list of name of monitoring clients internally.
+            4. _client_list : Dictionary of currently connected clients. It has key-value
+              pair of (client_name, Client object). Each Client object has the list of name
+              of monitoring channels internally.
+        """
         self.wavemeter = Wavemeter()
         self._server_status = SERVER_STATUS["disconnected"]
         self._work_list = []
         self._channel_list_prio_low =  {}
         self._channel_list_prio_high = {}
+        self._client_list = {}
 
         self._mutex = QMutex()
         self._cond = QWaitCondition()
 
     def _inform_clients(self, message, client_list):
+        """ Send message to multiple clients. client_list is a string or a list of
+            clients' name.
+        """
         if type(client_list) != list:
             client_list = [client_list]
 
-        for client in client_list:
-            client.toMessageList(message)
+        for client_name in client_list:
+            client_handler = self._client_list[client_name]
+            client_handler.toMessageList(message)
 
     def _broadcast_clients(self, message):
-        # todo - broadcast message to all users connected to the server
-        pass
+        """ Broadcast message to all clients who are listening the wavemeter """
+        for client_handler in self._client_list.values():
+            client_handler.toMessageList(message)
 
-    def _start_program(self, initial_channel_list):
+    def _new_connection(self, client_name, client_handler):
+        """ For the newly connecting client, enroll it to the client list and 
+            reply with the current server status to let the client initialize its
+            UI and data structures.
+        """
+        new_client_obj = Client(client_name, client_handler)
+        self._client_list[client_name] = new_client_obj
+
+        message = ['((todo))', 'STA', [self._server_status]]
+        client_handler.toMessageList(message)
+
+    def _start_program(self, initial_channel_list, requester_handler):
+        ### If the program is already started or focused, reply the current status
+        ### to the requester only
         if self._server_status == SERVER_STATUS["started"] \
         or self._server_status == SERVER_STATUS["focused"]:
-            # todo - notify the user that the program is already started with STA message
-            pass
+            message = ['((todo))', 'STA', [self._server_status]]
+            requester_handler.toMessageList(message)
+            return
 
+        ### After starting the program, broadcast the change of the status to all users
         self.wavemeter.start_program()
         self._server_status = SERVER_STATUS["started"]
+        message = ['((todo))', 'STA', [self._server_status]]
+        self._broadcast_clients(message)
 
-    def _stop_program(self):
+    def _stop_program(self, requester_handler):
+        ### If the program is already stopped, reply the current status to the requester only
         if self._server_status == SERVER_STATUS["stoped"]:
-            # todo - notify the user that the program is already stopped with STA message
-            pass
-        
+            message = ['((todo))', 'STA', [self._server_status]]
+            requester_handler.toMessageList(message)
+            return
+
+        ### After stopping the program, broadcast the change of the status to all users
         self.wavemeter.stop_program()
         self._server_status = SERVER_STATUS["stopped"]
+        message = ['((todo))', 'STA', [self._server_status]]
+        self._broadcast_clients(message)
 
     def _kill_program(self):
-        # todo 
+        # todo
         pass
 
-    def _add_user_to_channel(self):
-        # todo 
-        pass
+    def _add_user_to_channel(self, client_name, channel_list):
+        for channel_name in channel_list:
+            if channel_name not in self._channel_list_prio_low:
+                # todoo - NAK
+                continue
+            channel_obj = self._channel_list_prio_low[channel_name]
+            channel_obj.monitor_list.append(client_name)
 
-    def _remove_user_from_channel(self):
+    def _remove_user_from_channel(self, channel_name):
         # todo 
         pass
 
     def _pid_on(self, channel_name, requester):
         ### Check that the channel_name is valid for pid on
-        if channel_name not in self.channel_list_low_prio.keys():
+        if channel_name not in self._channel_list_prio_low.keys():
             # todoo - self.server_socket.send_message_to_specific_clients(NAK, [user_name])
             return
 
-        channel = self.channel_list_low_prio[channel_name]
+        channel = self._channel_list_prio_low[channel_name]
         channel.pid_on = True
 
         data = []
@@ -89,20 +131,18 @@ class WavemeterController():
         data.append(channel.gain)
         message = ['C', 'PON', data]
 
-        # deprecated - self.server_socket.send_message_to_specific_clients(message, channel.monitor_list)
         self._inform_clients(message, channel.monitor_list)
 
     def _pid_off(self, channel_name, requester):
         ### Check that the channel_name is valid for pid off
-        if channel_name not in self.channel_list_low_prio.keys():
+        if channel_name not in self._channel_list_prio_low.keys():
             # todoo - self.server_socket.send_message_to_specific_clients(NAK, [user_name])
             return
 
-        channel = self.channel_list_low_prio[channel_name]
+        channel = self._channel_list_prio_low[channel_name]
         channel.pid_on = False
 
         message = ['C', 'POF', [channel_name]]
-        # deprecated - self.server_socket.send_message_to_specific_clients(message, channel.monitor_list)
         self._inform_clients(message, channel.monitor_list)
 
     def _focus_on(self, channel_name, requester):
@@ -110,12 +150,12 @@ class WavemeterController():
         if channel_name not in self._channel_list_prio_low.keys():
             # todoo - self.server_socket.send_message_to_specific_clients(NAK, [user_name])
             return
-        elif not self.channel_list_high_prio:
+        elif not self._channel_list_prio_high:
             # todoo - self.server_socket.send_message_to_specific_clients(NAK, [user_name])
             return
         
-        channel = self.channel_list_low_prio[channel_name]
-        self.channel_list_high_prio[channel_name] = channel
+        channel = self._channel_list_prio_low[channel_name]
+        self._channel_list_prio_high[channel_name] = channel
         self._server_status = SERVER_STATUS["focused"]
 
         message = ['C', 'FON', [channel_name]]
@@ -130,12 +170,11 @@ class WavemeterController():
             # todoo - self.server_socket.send_message_to_specific_clients(NAK, [user_name])
             return
 
-        channel = self.channel_list_low_prio[channel_name]
-        self.channel_list_high_prio = {}
+        channel = self._channel_list_prio_low[channel_name]
+        self._channel_list_prio_high = {}
         self._server_status = SERVER_STATUS["started"]
 
         message = ['C', 'FOF', [channel_name]]
-        # deprecated - self.server_socket.broadcast_message(message)
         self._broadcast_clients(message)
 
     def _auto_exposure_on(self, channel_name, requester):
@@ -144,11 +183,10 @@ class WavemeterController():
             # todoo - self.server_socket.send_message_to_specific_clients(NAK, [user_name])
             return
 
-        channel = self.channel_list_low_prio[channel_name]
+        channel = self._channel_list_prio_low[channel_name]
         channel.auto_exposure_on = True
 
         message = ['C', 'AEN', [channel_name]]
-        # deprecated - self.server_socket.send_message_to_specific_clients(message, channel.monitor_list)
         self._inform_clients(message, channel.monitor_list)
 
     def _auto_exposure_off(self, channel_name, requester):
@@ -157,11 +195,10 @@ class WavemeterController():
             # todoo - self.server_socket.send_message_to_specific_clients(NAK, [user_name])
             return
 
-        channel = self.channel_list_low_prio[channel_name]
+        channel = self._channel_list_prio_low[channel_name]
         channel.auto_exposure_on = False
 
         message = ['C', 'AEF', [channel_name]]
-        # deprecated - self.server_socket.send_message_to_specific_clients(message, channel.monitor_list)
         self._inform_clients(message, channel.monitor_list)
 
     def _reply_current_status(self, requester):
@@ -171,87 +208,80 @@ class WavemeterController():
         pass
 
     def _update_target_frequency(self, channel_name, target_frequency):
-        if channel_name not in self.channel_list_low_prio.keys():
+        if channel_name not in self._channel_list_prio_low.keys():
             # todoo - self.server_socket.send_message_to_specific_clients(NAK, [user_name])
             return
 
-        channel = self.channel_list_low_prio[channel_name]
+        channel = self._channel_list_prio_low[channel_name]
         channel.target_frequency = target_frequency
 
         message = ['D', 'TFR', [channel_name, target_frequency]]
-        # depreacted - self.server_socket.send_message_to_specific_clients(message, channel.monitor_list)
         self._inform_clients(message, channel.monitor_list)
 
     def _update_exposure_time(self, channel_name, exposure_time):
-        if channel_name not in self.channel_list_low_prio.keys():
+        if channel_name not in self._channel_list_prio_low.keys():
             # todoo - self.server_socket.send_message_to_specific_clients(NAK, [user_name])
             return
         
-        channel = self.channel_list_low_prio[channel_name]
+        channel = self._channel_list_prio_low[channel_name]
         channel.exposure_time = exposure_time
 
         message = ['D', 'EXP', [channel_name, exposure_time]]
-        # deprecated - self.server_socket.send_message_to_specific_clients(message, channel.monitor_list)
         self._inform_clients(message, channel.monitor_list)
 
     def _update_output_voltage(self, channel_name, output_voltage, user_name):
-        if channel_name not in self.channel_list_low_prio.keys():
+        if channel_name not in self._channel_list_prio_low.keys():
             # todoo - self.server_socket.send_message_to_specific_clients(NAK, [user_name])
             return
         
-        channel = self.channel_list_low_prio[channel_name]
+        channel = self._channel_list_prio_low[channel_name]
         # todo - command ArtyS7 to make specified output voltage
 
         message = ['D', 'VLT', [channel_name, output_voltage]]
-        # deprecated - self.server_socket.send_message_to_specific_clients(message, channel.monitor_list)
         self._inform_clients(message, channel.monitor_list)
 
     def _update_p_value(self, channel_name, p_value, user_name):
-        if channel_name not in self.channel_list_low_prio.keys():
+        if channel_name not in self._channel_list_prio_low.keys():
             # todoo - self.server_socket.send_message_to_specific_clients(NAK, [user_name])
             return
         
-        channel = self.channel_list_low_prio[channel_name]
+        channel = self._channel_list_prio_low[channel_name]
         channel.pp = p_value
 
         message = ['D', 'PPP', [channel_name, p_value]]
-        # deprecated - self.server_socket.send_message_to_specific_clients(message, channel.monitor_list)
         self._inform_clients(message, channel.monitor_list)
 
     def _update_i_value(self, channel_name, i_value, user_name):
-        if channel_name not in self.channel_list_low_prio.keys():
+        if channel_name not in self._channel_list_prio_low.keys():
             # todoo - self.server_socket.send_message_to_specific_clients(NAK, [user_name])
             return
         
-        channel = self.channel_list_low_prio[channel_name]
+        channel = self._channel_list_prio_low[channel_name]
         channel.ii = i_value
 
         message = ['D', 'III', [channel_name, i_value]]
-        # deprecated - self.server_socket.send_message_to_specific_clients(message, channel.monitor_list)
         self._inform_clients(message, channel.monitor_list)
 
     def _update_d_value(self, channel_name, d_value, user_name):
-        if channel_name not in self.channel_list_low_prio.keys():
+        if channel_name not in self._channel_list_prio_low.keys():
             # todoo - self.server_socket.send_message_to_specific_clients(NAK, [user_name])
             return
         
-        channel = self.channel_list_low_prio[channel_name]
+        channel = self._channel_list_prio_low[channel_name]
         channel.dd = d_value
 
         message = ['D', 'DDD', [channel_name, d_value]]
-        # deprecated - self.server_socket.send_message_to_specific_clients(message, channel.monitor_list)
         self._inform_clients(message, channel.monitor_list)
 
     def _update_gain_value(self, channel_name, gain, user_name):
-        if channel_name not in self.channel_list_low_prio.keys():
+        if channel_name not in self._channel_list_prio_low.keys():
             # todoo - self.server_socket.send_message_to_specific_clients(NAK, [user_name])
             return
         
-        channel = self.channel_list_low_prio[channel_name]
+        channel = self._channel_list_prio_low[channel_name]
         channel.gain = gain
 
         message = ['D', 'GAN', [channel_name, gain]]
-        # deprecated - self.server_socket.send_message_to_specific_clients(message, channel.monitor_list)
         self._inform_clients(message, channel.monitor_list)
 
     def _capture_current_configuration(self, file_name):
@@ -298,12 +328,17 @@ class WavemeterController():
                 control = work[0]
                 command = work[1]
                 data = work[2]
-                client = work[3]
+                client_handler = work[3]
 
                 if control == 'C':
-                    if command == 'SRT':
+                    if command == "CON":
+                        ### data : [0] (str)client name
+                        self._new_connection(data[0], client_handler)
+                    elif command == "DCN":
+                        pass
+                    elif command == 'SRT':
                         ### data : [0] (list)list of initial channels
-                        self._start_program(data[0])
+                        self._start_program(data[0], client_handler)
                     elif command == 'STP':
                         ### no data (empty list)
                         self._stop_program()
@@ -320,25 +355,25 @@ class WavemeterController():
                         pass
                     elif command == 'PON':
                         ### data : [0] (str)channel name
-                        self._pid_on(data[0], client)
+                        self._pid_on(data[0], client_handler)
                     elif command == 'POF':
                         ### data : [0] (str)channel name
-                        self._pid_off(data[0], client)
+                        self._pid_off(data[0], client_handler)
                     elif command == 'FON':
                         ### data : [0] (str)channel name
-                        self._focus_on(data[0], client)
+                        self._focus_on(data[0], client_handler)
                     elif command == 'FOF':
                         ### data : [0] (str)channel name
-                        self._focus_off(data[0], client)
+                        self._focus_off(data[0], client_handler)
                     elif command == 'AEN':
                         ### data : [0] (str)channel name
-                        self._auto_exposure_on(data[0], client)
+                        self._auto_exposure_on(data[0], client_handler)
                     elif command == 'AEF':
                         ### data : [0] (str)channel name
-                        self._auto_exposure_off(data[0], client)
+                        self._auto_exposure_off(data[0], client_handler)
                     elif command == 'WMS':
                         ### no data (empty list)
-                        self._reply_current_status(client)
+                        self._reply_current_status(client_handler)
                     elif command == 'SCF':
                         ### data : [0] (str)file name
                         self._capture_current_configuration(data[0])
@@ -423,8 +458,7 @@ class PIDLoop(QObject):
             self.mutex.unlock()
 
 class Channel():
-    def __init__(self, name, exposure_time, pid, fiber_switch,
-            DAC_channel):
+    def __init__(self, name, exposure_time, pid, fiber_switch, DAC_channel):
         ### pid : list of [0]P, [1]I, [2]D, [3]gain
         self.name = name
         self.monitor_list = []
@@ -449,6 +483,21 @@ class Channel():
 
         self.auto_exposure_on = False
         self.pid_on = False
+
+class Client():
+    def __init__(self, name, communication_handler):
+        self.name = name
+        self.communcation_handler = communication_handler
+        self.channel_list = []
+
+    def subscribe_channel(self, channel_name):
+        """ Add the name of the channel that the client newly subscribe to """
+        self.channel_list.append(channel_name)
+
+    def unsubscribe_channel(self, channel_name):
+        """ Remove the name of the channel that the client want to unsubscribe """
+        if channel_name in self.channel_list:
+            self.channel_list.remove(channel_name)
 
 def unit_convert(value):
     """ Return unit converted postive value if unit conversion is successful.

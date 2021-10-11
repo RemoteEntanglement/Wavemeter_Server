@@ -5,3 +5,5 @@
 
 SERVER_STATUS = {"disconnected":-1, "stopped":0, "started":1, "focused":2}
 THREAD_STATUS = {"standby":0, "running":1}
+
+OUT_OF_RANGE = -1

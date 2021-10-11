@@ -8,26 +8,95 @@
     current frequency with specifying the switch channel.
 """
 
+import time
+import os
+
 from highfinesse_wavemeter_v0_01 import HighfinesseWavemeter as HFWM
+from constant import *
 
 class Wavemeter():
     def __init__(self):
-        pass
+        self.status = self._get_current_status()
 
-    def start_program(self):
-        pass
+    def _get_current_status(self):
+        """ Returns positive value if the program is turned on.
+            Otherwise, returns zero.
+        """
+        return HFWM.Instantiate(-1, 0, 0, 0)
 
-    def stop_program(self):
-        pass
-    
     def run_program(self):
-        pass
+        """ If the program is not running, run the program in the
+            designated path.
+        """
+        if self._get_current_status() == 0:
+            # todo - how to determine highfinesse wavemeter program path?
+            os.startfile("C:/")
+            time.sleep(5)
 
     def exit_program(self):
-        pass
+        """ If the program is running, stop the measurement and exit the program
+            with the TASKKILL command.
+        """
+        if self._get_current_status() > 0:
+            self.stop_program()
+            # todo - determine the name of the process of the Highfiness wavemeter
+            os.system("TASKKILL /F /IM ((todo - name of the process))")
 
-    def get_current_frequency(self):
-        pass
+    def start_program(self):
+        """ If the program is running, start measurement, which is
+            same with clicking the "start" button in the program.
+        """
+        if self._get_current_status() > 0:
+            HFWM.Operation(HFWM.cCtrlStartMeasurement)
 
-    def set_switch_channel(self):
-        pass
+    def stop_program(self):
+        """ If the program is running, stop measurement, which is
+            same with clicking the "stop" button in the program.
+        """
+        if self._get_current_status() > 0:
+            HFWM.Operation(HFWM.cCtrlStopAll)
+
+    def set_switch_channel(self, switch_channel):
+        """ Check the range of switch channel (0~8) and call API
+            to switch to the expected channel.
+
+            Return 0 in success, negative value otherwise.
+        """
+        if switch_channel < 0 or switch_channel > 8:
+            return OUT_OF_RANGE
+
+        HFWM.SetSwitcherChannel(switch_channel)
+        return 0
+
+    def set_exposure_num(self, switch_channel, exposure_time):
+        """ Check the range of switch channel (0~8) and call API
+            to set the exposure time of the designated channel.
+
+            Return 0 in success, negative value otherwise.
+        """
+        if switch_channel < 0 or switch_channel > 8:
+            return OUT_OF_RANGE
+
+        HFWM.SetExposureNum(switch_channel, 1, exposure_time)
+        return 0
+
+    def get_current_frequency(self, switch_channel):
+        """ Check the range of switch channel (0~8) and call API
+            to switch to the expected channel.
+
+            Return 0 in success, negative value otherwise.
+        """
+        if switch_channel < 0 or switch_channel > 8:
+            return OUT_OF_RANGE
+
+        return HFWM.GetFrequencyNum(switch_channel, 0)
+
+    def get_current_interferometer(self, switch_channel):
+        if switch_channel < 0 or switch_channel > 8:
+            return OUT_OF_RANGE
+        
+        # todo - call API to get the interferometer data
+
+if __name__ == "__main__":
+    wavemeter = Wavemeter()
+    print("Current status : ", wavemeter._get_current_status())
