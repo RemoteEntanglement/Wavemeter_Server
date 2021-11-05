@@ -25,7 +25,7 @@ from wavemeter import *
 _file_name = os.path.realpath(__file__)
 _home_dir = os.path.dirname(_file_name)
 
-class WavemeterController():
+class WavemeterController(QThread):
     def __init__(self):
         """ Initialize internal data structures
             1. _server_status : Can have three values - stopped, started, and focused.
@@ -38,9 +38,11 @@ class WavemeterController():
               pair of (client_name, Client object). Each Client object has the list of name
               of monitoring channels internally.
         """
+        super().__init__()
         self.wavemeter = Wavemeter()
         self.pid_loop = PIDLoop(self)
         self._server_status = SERVER_STATUS["stopped"]
+        self._thread_status = THREAD_STATUS["standby"]
         self._work_list = []
         self._channel_list_prio_low =  {}
         self._channel_list_prio_high = {}
@@ -48,6 +50,8 @@ class WavemeterController():
 
         self._mutex = QMutex()
         self._cond = QWaitCondition()
+
+        self.pid_loop.start()
 
         self._open_config()
 
@@ -68,24 +72,24 @@ class WavemeterController():
 
             if section == 'PID':
                 try:
-                    self.switch_safe = parser[section]['switch safe']
-                    self.auto_exposure_step = parser[section]['auto exposure time']
-                    self.max_frequency_offset = parser[section]['max freq offset']
-                    self.max_frequency_change = parser[section]['max freq change']
+                    self.switch_safe = int(parser[section]['switch safe'])
+                    self.auto_exposure_step = float(parser[section]['auto exposure step'])
+                    self.max_frequency_offset = float(parser[section]['max freq offset'])
+                    self.max_frequency_change = float(parser[section]['max freq change'])
                 except:
                     # todo - exception
                     return
             elif section.startswith('CH'):
                 try:
                     name = parser[section]['name']
-                    fiber_switch = parser[section]['fiber switch']
-                    dac_channel = parser[section]['dac channel']
-                    target_frequency = parser[section]['target frequency']
-                    exposure_time = parser[section]['exposure time']
-                    p_value = parser[section]['pp']
-                    i_value = parser[section]['ii']
-                    d_value = parser[section]['dd']
-                    gain = parser[section]['gain']
+                    fiber_switch = int(parser[section]['fiber switch'])
+                    dac_channel = int(parser[section]['dac channel'])
+                    target_frequency = float(parser[section]['target frequency'])
+                    exposure_time = int(parser[section]['exposure time'])
+                    p_value = int(parser[section]['pp'])
+                    i_value = int(parser[section]['ii'])
+                    d_value = int(parser[section]['dd'])
+                    gain = int(parser[section]['gain'])
                 except:
                     # todo - exception
                     continue
@@ -102,12 +106,12 @@ class WavemeterController():
 
         for client_name in client_list:
             client_handler = self._client_list[client_name]
-            client_handler.toMessageList(message)
+            client_handler.send_message(message)
 
     def _broadcast_clients(self, message):
         """ Broadcast message to all clients who are listening the wavemeter """
         for client_handler in self._client_list.values():
-            client_handler.toMessageList(message)
+            client_handler.send_message(message)
 
     def _new_connection(self, client_name, client_handler):
         """ For the newly connecting client, enroll it to the client list and 
@@ -153,7 +157,7 @@ class WavemeterController():
 
     def _kill_program(self):
         """ 1) Kill the highfinesse wavemeter program. 2) Disconnect all clients. """
-        wavemeter.stop_measurement()
+        self.wavemeter.stop_measurement()
         self._server_status = SERVER_STATUS["stopped"]
 
     def _add_user_to_channel(self, channel_list, requester):
@@ -164,12 +168,16 @@ class WavemeterController():
         client_obj = self._client_list[client_name]
 
         for channel_name in channel_list:
-            if channel_name not in self._channel_list_prio_low:
-                # todo - exception
+            if self._server_status == SERVER_STATUS["started"] and \
+                channel_name not in self._channel_list_prio_low.keys():
+                continue
+            elif self._server_status == SERVER_STATUS["focused"] and \
+                channel_name not in self._channel_list_prio_high.keys():
                 continue
             channel_obj = self._channel_list_prio_low[channel_name]
-            channel_obj.monitor_list.append(client_name)
-            client_obj.channel_list.append(channel_name)
+            channel_obj.add_monitor_client(client_name)
+            client_obj.subscribe_channel(channel_name)
+        self.pid_loop.activate_loop()
 
     def _remove_user_from_channel(self, channel_name, requester):
         """ 1) Update monitor list of all channels in channel_list
@@ -180,15 +188,21 @@ class WavemeterController():
             client_obj = self._client_list[client_name]
             channel_obj = self._channel_list_prio_low[channel_name]
 
-            client_obj.channel_list.remove(channel_name)
-            channel_obj.monitor_list.remove(client_name)
+            client_obj.unsubscribe_channel(channel_name)
+            channel_obj.remove_monitor_client(client_name)
         except (KeyError, ValueError) as err:
             # todo - exception
             pass
 
-    def _pid_on(self, channel_name, requester):
+    def _pid_on(self, channel_name, requester=None):
         ### Check that the channel_name is valid for pid on
         if channel_name not in self._channel_list_prio_low.keys():
+            ### pid on to non-existing channel
+            # todo - exception
+            return
+        elif self._server_status == SERVER_STATUS["focused"] and \
+            channel_name not in self._channel_list_prio_high.keys():
+            ### pid on while another channel is focused
             # todo - exception
             return
 
@@ -206,9 +220,15 @@ class WavemeterController():
 
         self._inform_clients(message, channel.monitor_list)
 
-    def _pid_off(self, channel_name, requester):
+    def _pid_off(self, channel_name, requester=None):
         ### Check that the channel_name is valid for pid off
         if channel_name not in self._channel_list_prio_low.keys():
+            ### pid off to non-existing channel
+            # todo - exception
+            return
+        elif self._server_status == SERVER_STATUS["focused"] and \
+            channel_name not in self._channel_list_prio_high.keys():
+            ### pid off while another channel is focused
             # todo - exception
             return
 
@@ -218,12 +238,14 @@ class WavemeterController():
         message = ['C', 'POF', [channel_name]]
         self._inform_clients(message, channel.monitor_list)
 
-    def _focus_on(self, channel_name, requester):
+    def _focus_on(self, channel_name, requester=None):
         ### Check that the channel_name is valid for focus on
         if channel_name not in self._channel_list_prio_low.keys():
+            ### focus on to non-existing channel
             # todo - exception
             return
-        elif not self._channel_list_prio_high:
+        elif not self._channel_list_prio_high or self._server_status == SERVER_STATUS["focused"]:
+            ### focus on while another channel is already focused
             # todo - exception
             return
 
@@ -234,25 +256,33 @@ class WavemeterController():
         message = ['C', 'FON', [channel_name]]
         self._broadcast_clients(message)
 
-    def _focus_off(self, channel_name, requester):
+    def _focus_off(self, channel_name, requester=None):
         ### Check that the channel_name is valid for focus off
         if channel_name not in self._channel_list_prio_low.keys():
+            ### focus off to non-existing channel
             # todo - exception
             return
-        elif channel_name not in self._channel_list_prio_high.keys():
+        elif channel_name not in self._channel_list_prio_high.keys() or \
+            self._server_status == SERVER_STATUS["started"]:
+            ### focus off to non-focused channel
             # todo - exception
             return
 
-        channel = self._channel_list_prio_low[channel_name]
         self._channel_list_prio_high = {}
         self._server_status = SERVER_STATUS["started"]
 
         message = ['C', 'FOF', [channel_name]]
         self._broadcast_clients(message)
 
-    def _auto_exposure_on(self, channel_name, requester):
+    def _auto_exposure_on(self, channel_name, requester=None):
         ### Check that the channel_name is valid for auto exposure on
         if channel_name not in self._channel_list_prio_low.keys():
+            ### auto exposure on to non-existing channel
+            # todo - exception
+            return
+        elif self._server_status == SERVER_STATUS["focused"] and \
+            channel_name not in self._channel_list_prio_high.keys():
+            ### auto exposure on while another channel is focused
             # todo - exception
             return
 
@@ -262,9 +292,15 @@ class WavemeterController():
         message = ['C', 'AEN', [channel_name]]
         self._inform_clients(message, channel.monitor_list)
 
-    def _auto_exposure_off(self, channel_name, requester):
+    def _auto_exposure_off(self, channel_name, requester=None):
         ### Check that the channel_name is valid for auto exposure off
         if channel_name not in self._channel_list_prio_low.keys():
+            ### auto exposure off to non-existing channel
+            # todo - exception
+            return
+        elif self._server_status == SERVER_STATUS["focused"] and \
+            channel_name not in self._channel_list_prio_high.keys():
+            ### pid on while another channel is focused
             # todo - exception
             return
 
@@ -275,10 +311,9 @@ class WavemeterController():
         self._inform_clients(message, channel.monitor_list)
 
     def _reply_current_status(self, requester):
-        # todo - reply the current wavemeter status back to the requester
-        # channel name, users per each channel, fiber, switch, DAC Channel, PID on/off (target freq if on)
-        # focus on/off, exp time, pid vals
-        pass
+        # todo - build server status message
+        message = ['D', 'WMS', []]
+        self._inform_clients(message, requester.username)
 
     def _update_current_frequency(self, channel_name, current_frequency):
         if channel_name not in self._channel_list_prio_low.keys():
@@ -377,12 +412,37 @@ class WavemeterController():
         message = ['D', 'APD', [channel_name, data[0], data[1], data[2]]]
         self._inform_clients(message, channel.monitor_list)
 
-    def _capture_current_configuration(self, file_name):
-        # todo 
-        pass
+    def _capture_current_configuration(self, file_name=""):
+        parser = ConfigParser()
 
-    # ref - toWorkList(self, cmd): in the DummyDAC
-    # cmd = [control, command, data, self] -> self : MessageHandler (or commHandler which I used)
+        if file_name == "":
+            file_name = socket.gethostname() + ".ini"
+        file_path = os.path.join(_home_dir, 'config', file_name)
+
+        channel_index = 1
+        parser['PID'] = {
+            'switch safe': self.switch_safe,
+            'auto exposure step': self.auto_exposure_step,
+            'max freq offset': self.max_frequency_offset,
+            'max freq change': self.max_frequency_change
+        }
+        for channel_name, channel_obj in self._channel_list_prio_low.items():
+            parser['CH'+str(channel_index)] = {
+                'name': channel_name,
+                'fiber switch': channel_obj.fiber_switch,
+                'dac channel': channel_obj.DAC_channel,
+                'target frequency': channel_obj.target_frequency,
+                'exposure time': channel_obj.exposure_time,
+                'pp': channel_obj.pp,
+                'ii': channel_obj.ii,
+                'dd': channel_obj.dd,
+                'gain': channel_obj.gain
+            }
+            channel_index += 1
+
+        with open(file_path, 'w+') as config_file:
+            parser.write(config_file)
+
     def toWorkList(self, message):
         """ Translates message to execute the proper functions.
             The argumnet cmd should be the list of four elements, which are control
@@ -428,6 +488,7 @@ class WavemeterController():
                         ### data : [0] (str)client name
                         self._new_connection(data[0], client_handler)
                     elif command == 'DCN':
+                        # todo
                         pass
                     elif command == 'SRT':
                         ### data : [0] (list)list of initial channels
@@ -532,8 +593,75 @@ class PIDLoop(QThread):
         self.signal_new_output.connect(self.controller._update_output_voltage)
         self.signal_new_apd_value.connect(self.controller._inform_apd_value)
 
-    def _measure_frequency(self):
-        pass
+    def _measure_frequency(self, channel_name, channel_obj):
+        self.controller.wavemeter.set_switch_channel(channel_obj.fiber_switch)
+        total_exposure = channel_obj.exposure_time + self.controller.wavemeter.switch_delay
+        self.time_consumed += total_exposure
+        time.sleep(0.001 * total_exposure)
+
+        current_frequency = self.controller.wavemeter.get_current_frequency(channel_obj.fiber_switch)
+        previous_weighted_frequency = channel_obj.weighted_frequency
+        previous_time = channel_obj.current_time
+        channel_obj.current_time = time.time()
+        # todo - debug self.signal_new_measured_data.emit(channel_name, current_frequency)
+        self.controller._update_current_frequency(channel_name, current_frequency)
+
+        if current_frequency == 0:
+            ### No signal
+            # todo - exception
+            return
+        elif current_frequency == -3:
+            ###
+            if channel_obj.auto_exposure_on:
+                new_exp = int(channel_obj.exposure_time * self.controller.auto_exposure_step)
+                if new_exp > self.controller.wavemeter.cExposureMax:
+                    new_exp = self.controller.wavemeter.cExposureMax
+                # todo - debug self.signal_new_exposure_time.emit(channel_name, new_exp)
+                self.controller._update_exposure_time(channel_name, new_exp)
+            return
+        elif current_frequency == -4:
+            ###
+            if channel_obj.auto_exposure_on:
+                new_exp = int(channel_obj.exposure_time / self.controller.auto_exposure_step)
+                if new_exp < self.controller.wavemeter.cExposureMin:
+                    new_exp = self.controller.wavemeter.cExposureMin
+                # todo - debug self.signal_new_exposure_time.emit(channel_name, new_exp)
+                self.controller._update_exposure_time(channel_name, new_exp)
+            return
+
+        ### If the frequency changes abruptly (more than 1 GHz), set weighted frequency equal to
+        ### the current freuqency. Otherwise, apply weight 0.9 to the current frequency and 0.1 to
+        ### the previous weighted frequency.
+        if abs(channel_obj.current_frequency - channel_obj.weighted_frequency) > 0.001:
+            channel_obj.weighted_frequency = channel_obj.current_frequency
+        else:
+            channel_obj.weighted_frequency \
+                = channel_obj.current_frequency * 0.9 + channel_obj.weighted_frequency * 0.1
+
+        if not channel_obj.pid_on:
+            return
+
+        frequency_offset = channel_obj.weighted_frequency - channel_obj.target_frequency
+        if frequency_offset > self.controller.max_frequency_offset:
+            frequency_offset = self.controller.max_frequency_offset
+
+        delta_t = channel_obj.current_time - previous_time
+        delta_f = channel_obj.weighted_frequency - previous_weighted_frequency
+        if delta_f > self.controller.max_frequency_change:
+            delta_f = self.controller.max_frequency_change
+
+        channel_obj.accumulator = channel_obj.accumulator + channel_obj.ii * frequency_offset * delta_t
+        channel_obj.proportional = channel_obj.pp * frequency_offset
+        channel_obj.differentiator = channel_obj.dd * delta_f / delta_t
+        new_output = channel_obj.recent_output_voltage + \
+            (channel_obj.accumulator + channel_obj.proportional + channel_obj.differentiator) * channel_obj.gain
+        # todo - debug self.signal_new_output.emit(channel_name, new_output)
+        # todo - debugself.signal_new_apd_value.emit(channel_name, [channel_obj.accumulator, channel_obj.proportional, \
+        #    channel_obj.differentiator])
+
+        self.controller._update_output_voltage(channel_name, new_output)
+        self.controller._inform_apd_value(channel_name, [channel_obj.accumulator, channel_obj.proportional, \
+            channel_obj.differentiator])
 
     def activate_loop(self):
         """ Starting the loop. Starting measurement should be done externally. """
@@ -547,149 +675,45 @@ class PIDLoop(QThread):
     def run(self):
         last_time = time.time()
         while True:
-            time_consumed = 0
+            self.time_consumed = 0
             self.mutex.lock()
             if self.is_running and self.controller._channel_list_prio_high:
                 ### Case where some channel is focused.
                 ### There should be only one channel in self.controller._channel_list_prio_high
                 focused_flag = True
                 for channel_name, channel_obj in self.controller._channel_list_prio_high.items():
-                    wavemeter.set_switch_channel(channel_obj.fiber_switch)
-                    total_exposure = channel_obj.exposure_time + wavemeter.switch_delay
-                    time_consumed += total_exposure
+                    self.time_consumed += self.controller.switch_safe
+                    time.sleep(0.001 * self.controller.switch_safe)
 
-                    current_frequency = wavemeter.get_current_frequency(channel_obj.fiber_switch)
-                    previous_weighted_frequency = channel_obj.weighted_frequency
-                    previous_time = channel_obj.current_time
-                    channel_obj.current_time = time.time()
-                    self.signal_new_measured_data.emit(channel_name, current_frequency)
-
-                    if current_frequency == 0:
-                        ### No signal
-                        # todo - exception
-                        continue
-                    elif current_frequency == -3:
-                        ###
-                        if channel_obj.auto_exposure_on:
-                            new_exp = int(channel_obj.exposure_time * self.controller.auto_exposure_step)
-                            if new_exp > wavemeter.cExposureMax:
-                                new_exp = wavemeter.cExposureMax
-                            self.signal_new_exposure_time(channel_name, new_exp)
-                        continue
-                    elif current_frequency == -4:
-                        ###
-                        if channel_obj.auto_exposure_on:
-                            new_exp = int(channel_obj.exposure_time / self.controller.auto_exposure_step)
-                            if new_exp < wavemeter.cExposureMin:
-                                new_exp = wavemeter.cExposureMin
-                            self.signal_new_exposure_time(channel_name, new_exp)
+                    if not channel_obj.monitor_list:
+                        ### If the focused channel has no monitoring client, focus off it
+                        self.controller._focus_off(channel_name)
                         continue
 
-                    ### If the frequency changes abruptly (more than 1 GHz), set weighted frequency equal to
-                    ### the current freuqency. Otherwise, apply weight 0.9 to the current frequency and 0.1 to
-                    ### the previous weighted frequency.
-                    if abs(channel_obj.current_frequency - channel_obj.weighted_frequency) > 0.001:
-                        channel_obj.weighted_frequency = channel_obj.current_frequency
-                    else:
-                        channel_obj.weighted_frequency \
-                            = channel_obj.current_frequency * 0.9 + channel_obj.weighted_frequency * 0.1
-
-                    if not channel_obj.pid_on:
-                        continue
-
-                    frequency_offset = channel_obj.weighted_frequency - channel_obj.target_frequency
-                    if frequency_offset > self.controller.max_frequency_offset:
-                        frequency_offset = self.controller.max_frequency_offset
-
-                    delta_t = channel_obj.current_time - previous_time
-                    delta_f = channel_obj.weighted_frequency - previous_weighted_frequency
-                    if delta_f > self.controller.max_frequency_change:
-                        delta_f = self.controller.max_frequency_change
-
-                    channel_obj.accumulator = channel_obj.accumulator + channel_obj.ii * frequency_offset * delta_t
-                    channel_obj.proportional = channel_obj.pp * frequency_offset
-                    channel_obj.differentiator = channel_obj.dd * delta_f / delta_t
-                    new_output = channel_obj.recent_output_voltage + \
-                        (channel_obj.accumulator + channel_obj.proportional + channel_obj.differentiator) * channel_obj.gain
-                    self.signal_new_output.emit(channel_name, new_output)
-                    self.signal_new_apd_value.emit(channel_name, [channel_obj.accumulator, channel_obj.proportional, \
-                        channel_obj.differentiator])
-
+                    self._measure_frequency(channel_name, channel_obj)
                     break
             elif self.is_running and not self.controller._channel_list_prio_high:
                 ### Case where no channel is focused.
                 focused_flag = False
+                monitor_exist = False
                 for channel_name, channel_obj in self.controller._channel_list_prio_low.items():
-                    time_consumed += self.controller.switch_safe
+                    self.time_consumed += self.controller.switch_safe
                     time.sleep(0.001 * self.controller.switch_safe)
+
                     if not channel_obj.monitor_list:
                         continue
+                    
+                    monitor_exist = True
+                    self._measure_frequency(channel_name, channel_obj)
 
-                    wavemeter.set_switch_channel(channel_obj.fiber_switch)
-                    total_exposure = channel_obj.exposure_time + wavemeter.switch_delay
-                    time_consumed += total_exposure
-                    time.sleep(0.001 * total_exposure)
-
-                    current_frequency = wavemeter.get_current_frequency(channel_obj.fiber_switch)
-                    previous_weighted_frequency = channel_obj.weighted_frequency
-                    previous_time = channel_obj.current_time
-                    channel_obj.current_time = time.time()
-                    self.signal_new_measured_data.emit(channel_name, current_frequency)
-
-                    if current_frequency == 0:
-                        ### No signal
-                        # todo - exception
-                        continue
-                    elif current_frequency == -3:
-                        ###
-                        if channel_obj.auto_exposure_on:
-                            new_exp = int(channel_obj.exposure_time * self.controller.auto_exposure_step)
-                            if new_exp > wavemeter.cExposureMax:
-                                new_exp = wavemeter.cExposureMax
-                            self.signal_new_exposure_time(channel_name, new_exp)
-                        continue
-                    elif current_frequency == -4:
-                        ###
-                        if channel_obj.auto_exposure_on:
-                            new_exp = int(channel_obj.exposure_time / self.controller.auto_exposure_step)
-                            if new_exp < wavemeter.cExposureMin:
-                                new_exp = wavemeter.cExposureMin
-                            self.signal_new_exposure_time(channel_name, new_exp)
-                        continue
-
-                    ### If the frequency changes abruptly (more than 1 GHz), set weighted frequency equal to
-                    ### the current freuqency. Otherwise, apply weight 0.9 to the current frequency and 0.1 to
-                    ### the previous weighted frequency.
-                    if abs(channel_obj.current_frequency - channel_obj.weighted_frequency) > 0.001:
-                        channel_obj.weighted_frequency = channel_obj.current_frequency
-                    else:
-                        channel_obj.weighted_frequency \
-                            = channel_obj.current_frequency * 0.9 + channel_obj.weighted_frequency * 0.1
-
-                    if not channel_obj.pid_on:
-                        continue
-
-                    frequency_offset = channel_obj.weighted_frequency - channel_obj.target_frequency
-                    if frequency_offset > self.controller.max_frequency_offset:
-                        frequency_offset = self.controller.max_frequency_offset
-
-                    delta_t = channel_obj.current_time - previous_time
-                    delta_f = channel_obj.weighted_frequency - previous_weighted_frequency
-                    if delta_f > self.controller.max_frequency_change:
-                        delta_f = self.controller.max_frequency_change
-
-                    channel_obj.accumulator = channel_obj.accumulator + channel_obj.ii * frequency_offset * delta_t
-                    channel_obj.proportional = channel_obj.pp * frequency_offset
-                    channel_obj.differentiator = channel_obj.dd * delta_f / delta_t
-                    new_output = channel_obj.recent_output_voltage + \
-                        (channel_obj.accumulator + channel_obj.proportional + channel_obj.differentiator) * channel_obj.gain
-                    self.signal_new_output.emit(channel_name, new_output)
-                    self.signal_new_apd_value.emit(channel_name, [channel_obj.accumulator, channel_obj.proportional, \
-                        channel_obj.differentiator])
+                if not monitor_exist:
+                    self.inactivate_loop()
             else:
                 self.wait_condition.wait(self.mutex)
-            if time_consumed < 1000 and not focused_flag:
-                time.sleep(1 - 0.001 * time_consumed)
+                self.mutex.unlock()
+                continue
+            if self.time_consumed < 1000 and not focused_flag:
+                time.sleep(1 - 0.001 * self.time_consumed)
             self.mutex.unlock()
 
 class Channel():
@@ -721,16 +745,23 @@ class Channel():
         self.pid_on = False
 
     def add_monitor_client(self, client_name):
+        """ Add new subscriber client to the monitor list """
         if client_name in self.monitor_list:
             return
 
         self.monitor_list.append(client_name)
 
     def remove_monitor_client(self, client_name):
+        """ Unsubscribe the specified client from the channel """
         if client_name not in self.monitor_list:
             return
 
         self.monitor_list.remove(client_name)
+
+        ### For the unused channel, turn off pid and auto exposure
+        if not self.monitor_list:
+            self.auto_exposure_on = False
+            self.pid_on = False
 
 class Client():
     """ Logical class representing the client. """
@@ -738,6 +769,9 @@ class Client():
         self.name = client_name
         self.communcation_handler = communication_handler
         self.channel_list = []
+
+    def send_message(self, message):
+        self.communcation_handler.toMessageList(message)
 
     def subscribe_channel(self, channel_name):
         """ Add the name of the channel that the client newly subscribe to. """
@@ -751,7 +785,7 @@ class Client():
 def unit_convert(value):
     """ Return unit converted postive value if unit conversion is successful.
         Return the original value, otherwise.
-        
+
         Convert frequency to wavelength, wavelength to frequency.
     """
     SPEED_OF_LIGHT = 299792458.0

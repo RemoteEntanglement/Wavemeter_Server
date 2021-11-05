@@ -4,14 +4,15 @@ class DummyWavemeter():
 
     def _init_parameters(self):
         self.turned_on = 0
-        self.cCtrlStopAll = -100
-        self.cCtrlStartMeasurement = 100
+        self.cCtrlStopAll = -3937
+        self.cCtrlStartMeasurement = 3937
+        self.switchDelay = 100
 
     def Instantiate(self, num1, num2, num3, num4):
         if num1 != -1 or num2 != 0 or num3 != 0 or num4 != 0:
             print("[Dummy wavemeter] Wrong - Instantiate(-1, 0, 0, 0)")
             return -1
-        
+
         return self.turned_on
 
     def Operation(self, parameter):
@@ -27,4 +28,11 @@ class DummyWavemeter():
 
     def SetExposureNum(self, switch_channel, num, exposure_time):
         if num != 1:
-            print("[Dummy Wavemeter] Wrong- SetExposureNum(SWCh, 1, exptime")
+            print("[Dummy Wavemeter] Wrong - SetExposureNum(SWCh, 1, exptime")
+
+    def GetFrequencyNum(self, switch_channel, num):
+        if num != 0:
+            print("[Dummy Wavemeter] Wrong - GetFrequencyNum(SWCh, 0)")
+            return 0
+
+        return 751.0101

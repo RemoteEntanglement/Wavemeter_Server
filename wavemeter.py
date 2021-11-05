@@ -17,13 +17,19 @@ from constant import *
 
 class Wavemeter():
     def __init__(self):
+        self.WM = WM()
+
+        self._init_parameters()
         self.status = self._get_current_status()
+
+    def _init_parameters(self):
+        self.switch_delay = self.WM.switchDelay
 
     def _get_current_status(self):
         """ Returns positive value if the program is turned on.
             Otherwise, returns zero.
         """
-        return WM.Instantiate(-1, 0, 0, 0)
+        return self.WM.Instantiate(-1, 0, 0, 0)
 
     def run_program(self):
         """ If the program is not running, run the program in the
@@ -31,7 +37,7 @@ class Wavemeter():
         """
         if self._get_current_status() == 0:
             # todo - how to determine highfinesse wavemeter program path?
-            os.startfile("C:/")
+            # os.startfile("C:/")
             time.sleep(5)
 
     def exit_program(self):
@@ -48,14 +54,16 @@ class Wavemeter():
             same with clicking the "start" button in the program.
         """
         if self._get_current_status() > 0:
-            WM.Operation(WM.cCtrlStartMeasurement)
+            self.WM.Operation(self.WM.cCtrlStartMeasurement)
+        elif self._get_current_status() == 0:
+            self.run_program()
 
     def stop_measurement(self):
         """ If the program is running, stop measurement, which is
             same with clicking the "stop" button in the program.
         """
         if self._get_current_status() > 0:
-            WM.Operation(WM.cCtrlStopAll)
+            self.WM.Operation(self.WM.cCtrlStopAll)
 
     def set_switch_channel(self, switch_channel):
         """ Check the range of switch channel (0~8) and call API
@@ -66,7 +74,7 @@ class Wavemeter():
         if switch_channel < 0 or switch_channel > 8:
             return OUT_OF_RANGE
 
-        WM.SetSwitcherChannel(switch_channel)
+        self.WM.SetSwitcherChannel(switch_channel)
         return 0
 
     def set_exposure_num(self, switch_channel, exposure_time):
@@ -78,7 +86,7 @@ class Wavemeter():
         if switch_channel < 0 or switch_channel > 8:
             return OUT_OF_RANGE
 
-        WM.SetExposureNum(switch_channel, 1, exposure_time)
+        self.WM.SetExposureNum(switch_channel, 1, exposure_time)
         return 0
 
     def get_current_frequency(self, switch_channel):
@@ -90,7 +98,7 @@ class Wavemeter():
         if switch_channel < 0 or switch_channel > 8:
             return OUT_OF_RANGE
 
-        return WM.GetFrequencyNum(switch_channel, 0)
+        return self.WM.GetFrequencyNum(switch_channel, 0)
 
     def get_current_interferometer(self, switch_channel):
         if switch_channel < 0 or switch_channel > 8:
