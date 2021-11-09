@@ -121,7 +121,7 @@ class WavemeterController(QThread):
         new_client_obj = Client(client_name, client_handler)
         self._client_list[client_name] = new_client_obj
 
-        message = ['C', 'STA', [self._server_status]]
+        message = ['C', 'WVM', 'STA', [self._server_status]]
         client_handler.toMessageList(message)
 
     def _start_measurement(self, initial_channel_list, requester_handler):
@@ -130,7 +130,7 @@ class WavemeterController(QThread):
         """
         if self._server_status == SERVER_STATUS["started"] \
         or self._server_status == SERVER_STATUS["focused"]:
-            message = ['C', 'STA', [self._server_status]]
+            message = ['C', 'WVM', 'STA', [self._server_status]]
             requester_handler.toMessageList(message)
             return
 
@@ -138,13 +138,13 @@ class WavemeterController(QThread):
         self.wavemeter.start_measurement()
         self._server_status = SERVER_STATUS["started"]
         self.pid_loop.activate_loop()
-        message = ['C', 'STA', [self._server_status]]
+        message = ['C', 'WVM', 'STA', [self._server_status]]
         self._broadcast_clients(message)
 
     def _stop_measurement(self, requester_handler):
         """ If the program is already stopped, reply the current status to the requester only """
         if self._server_status == SERVER_STATUS["stopped"]:
-            message = ['C', 'STA', [self._server_status]]
+            message = ['C', 'WVM', 'STA', [self._server_status]]
             requester_handler.toMessageList(message)
             return
 
@@ -152,7 +152,7 @@ class WavemeterController(QThread):
         self.wavemeter.stop_measurement()
         self._server_status = SERVER_STATUS["stopped"]
         self.pid_loop.inactivate_loop()
-        message = ['C', 'STA', [self._server_status]]
+        message = ['C', 'WVM', 'STA', [self._server_status]]
         self._broadcast_clients(message)
 
     def _kill_program(self):
@@ -216,7 +216,7 @@ class WavemeterController(QThread):
         data.append(channel.ii)
         data.append(channel.dd)
         data.append(channel.gain)
-        message = ['C', 'PON', data]
+        message = ['C', 'WVM', 'PON', data]
 
         self._inform_clients(message, channel.monitor_list)
 
@@ -235,7 +235,7 @@ class WavemeterController(QThread):
         channel = self._channel_list_prio_low[channel_name]
         channel.pid_on = False
 
-        message = ['C', 'POF', [channel_name]]
+        message = ['C', 'WVM', 'POF', [channel_name]]
         self._inform_clients(message, channel.monitor_list)
 
     def _focus_on(self, channel_name, requester=None):
@@ -253,7 +253,7 @@ class WavemeterController(QThread):
         self._channel_list_prio_high[channel_name] = channel
         self._server_status = SERVER_STATUS["focused"]
 
-        message = ['C', 'FON', [channel_name]]
+        message = ['C', 'WVM', 'FON', [channel_name]]
         self._broadcast_clients(message)
 
     def _focus_off(self, channel_name, requester=None):
@@ -271,7 +271,7 @@ class WavemeterController(QThread):
         self._channel_list_prio_high = {}
         self._server_status = SERVER_STATUS["started"]
 
-        message = ['C', 'FOF', [channel_name]]
+        message = ['C', 'WVM', 'FOF', [channel_name]]
         self._broadcast_clients(message)
 
     def _auto_exposure_on(self, channel_name, requester=None):
@@ -289,7 +289,7 @@ class WavemeterController(QThread):
         channel = self._channel_list_prio_low[channel_name]
         channel.auto_exposure_on = True
 
-        message = ['C', 'AEN', [channel_name]]
+        message = ['C', 'WVM', 'AEN', [channel_name]]
         self._inform_clients(message, channel.monitor_list)
 
     def _auto_exposure_off(self, channel_name, requester=None):
@@ -307,12 +307,12 @@ class WavemeterController(QThread):
         channel = self._channel_list_prio_low[channel_name]
         channel.auto_exposure_on = False
 
-        message = ['C', 'AEF', [channel_name]]
+        message = ['C', 'WVM', 'AEF', [channel_name]]
         self._inform_clients(message, channel.monitor_list)
 
     def _reply_current_status(self, requester):
         # todo - build server status message
-        message = ['D', 'WMS', []]
+        message = ['D', 'WVM', 'WMS', []]
         self._inform_clients(message, requester.username)
 
     def _update_current_frequency(self, channel_name, current_frequency):
@@ -323,7 +323,7 @@ class WavemeterController(QThread):
         channel = self._channel_list_prio_low[channel_name]
         channel.current_frequency = current_frequency
 
-        message = ['D', 'CFR', [channel_name, current_frequency]]
+        message = ['D', 'WVM', 'CFR', [channel_name, current_frequency]]
         self._inform_clients(message, channel.monitor_list)
 
     def _update_target_frequency(self, channel_name, target_frequency):
@@ -334,7 +334,7 @@ class WavemeterController(QThread):
         channel = self._channel_list_prio_low[channel_name]
         channel.target_frequency = target_frequency
 
-        message = ['D', 'TFR', [channel_name, target_frequency]]
+        message = ['D', 'WVM', 'TFR', [channel_name, target_frequency]]
         self._inform_clients(message, channel.monitor_list)
 
     def _update_exposure_time(self, channel_name, exposure_time):
@@ -345,7 +345,7 @@ class WavemeterController(QThread):
         channel = self._channel_list_prio_low[channel_name]
         channel.exposure_time = exposure_time
 
-        message = ['D', 'EXP', [channel_name, exposure_time]]
+        message = ['D', 'WVM', 'EXP', [channel_name, exposure_time]]
         self._inform_clients(message, channel.monitor_list)
 
     def _update_output_voltage(self, channel_name, output_voltage):
@@ -356,7 +356,7 @@ class WavemeterController(QThread):
         channel = self._channel_list_prio_low[channel_name]
         # todo - command ArtyS7 to make specified output voltage
 
-        message = ['D', 'VLT', [channel_name, output_voltage]]
+        message = ['D', 'WVM', 'VLT', [channel_name, output_voltage]]
         self._inform_clients(message, channel.monitor_list)
 
     def _update_p_value(self, channel_name, p_value):
@@ -367,7 +367,7 @@ class WavemeterController(QThread):
         channel = self._channel_list_prio_low[channel_name]
         channel.pp = p_value
 
-        message = ['D', 'PPP', [channel_name, p_value]]
+        message = ['D', 'WVM', 'PPP', [channel_name, p_value]]
         self._inform_clients(message, channel.monitor_list)
 
     def _update_i_value(self, channel_name, i_value):
@@ -378,7 +378,7 @@ class WavemeterController(QThread):
         channel = self._channel_list_prio_low[channel_name]
         channel.ii = i_value
 
-        message = ['D', 'III', [channel_name, i_value]]
+        message = ['D', 'WVM', 'III', [channel_name, i_value]]
         self._inform_clients(message, channel.monitor_list)
 
     def _update_d_value(self, channel_name, d_value):
@@ -389,7 +389,7 @@ class WavemeterController(QThread):
         channel = self._channel_list_prio_low[channel_name]
         channel.dd = d_value
 
-        message = ['D', 'DDD', [channel_name, d_value]]
+        message = ['D', 'WVM', 'DDD', [channel_name, d_value]]
         self._inform_clients(message, channel.monitor_list)
 
     def _update_gain_value(self, channel_name, gain):
@@ -400,7 +400,7 @@ class WavemeterController(QThread):
         channel = self._channel_list_prio_low[channel_name]
         channel.gain = gain
 
-        message = ['D', 'GAN', [channel_name, gain]]
+        message = ['D', 'WVM', 'GAN', [channel_name, gain]]
         self._inform_clients(message, channel.monitor_list)
 
     def _inform_apd_value(self, channel_name, data):
@@ -409,7 +409,7 @@ class WavemeterController(QThread):
             return
 
         channel = self._channel_list_prio_low[channel_name]
-        message = ['D', 'APD', [channel_name, data[0], data[1], data[2]]]
+        message = ['D', 'WVM', 'APD', [channel_name, data[0], data[1], data[2]]]
         self._inform_clients(message, channel.monitor_list)
 
     def _capture_current_configuration(self, file_name=""):
